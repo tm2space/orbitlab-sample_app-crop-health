@@ -129,46 +129,140 @@ channel stays at zero and `compute_vegetation_indices()` skips NDRE.
 
 ## Quick Start
 
-1. **Download** `crop_health_app_task.bz2` from the dashboard's
-   *Developer Examples & Templates → Docker* tab.
-2. **Unpack:**
-   ```bash
-   tar -xjf crop_health_app_task.bz2
-   cd crop_health_app
-   ```
-3. **Upload** the unpacked folder via the OrbitLab dashboard's task creation
-   flow. The dashboard packages it into a satellite uplink package and queues
-   the task.
-4. **Wait** for the task to run on the AICube; results appear in the
-   dashboard's task-detail view.
+This section walks you through every step — from getting the base image to
+seeing your results in the OrbitLab dashboard.
 
 ---
 
-## Building the Docker Image Locally
+### Step 1 — Get the AICube Base Image
 
-To test before submitting to OrbitLab, or to extend the app:
+The base image bundles Python 3, PyTorch, TensorFlow, ONNX Runtime, GDAL,
+Rasterio, NumPy, OpenCV, and more (~21 GB on disk).
+
+**Option A — Your own machine** (needs a strong system with sufficient disk
+space and ideally an NVIDIA GPU):
 
 ```bash
-# 1. Build the image
-docker build -t my-crop-health-app .
+# Pull the base image from the TM2Space registry
+docker pull tm2space/aicube-base:latest
 
-# 2. Run it with mock input/output dirs
+# Verify it landed correctly
+docker images tm2space/aicube-base:latest
+```
+
+**Option B — Rent an OrbitLab Workstation** (recommended if your local machine
+cannot handle a ~21 GB image). Log in to the OrbitLab dashboard, spin up a
+workstation, and run the `docker pull` command above in the provided terminal.
+The base image is pre-cached on OrbitLab workstations, so the pull is nearly
+instant.
+
+---
+
+### Step 2 — Download and Unzip the Sample App
+
+1. Open the OrbitLab dashboard and go to
+   **Developer Examples & Templates → Docker**.
+2. Download **`crop_health_app_task.zip`**.
+3. Unzip and enter the project directory:
+
+```bash
+unzip crop_health_app_task.zip -d ~/crop_health_project
+cd ~/crop_health_project/crop_health_app_task/crop_health_app
+```
+
+---
+
+### Step 3 — Build Your Docker Image
+
+```bash
+docker build -t my-crop-health-app:latest .
+```
+
+The build extends `tm2space/aicube-base:latest` with the app's extra
+dependencies and bakes in the ONNX model — expect a few minutes on first run.
+
+---
+
+### Step 4 — Test Locally (Optional)
+
+Run the container against a mock data directory to verify your build before
+uploading. Place sample GeoTIFF captures (with the required 4 bands) under
+`$(pwd)/data/<aoi_name>/` and a matching `player.config` at
+`$(pwd)/data/player.config`.
+
+```bash
 docker run --rm \
     -v $(pwd)/data:/opt/ilc_player/data \
     -v $(pwd)/results:/opt/ilc_player/results \
     -e ILC_INPUT_DIR=/opt/ilc_player/data \
     -e ILC_OUTPUT_DIR=/opt/ilc_player/results \
-    my-crop-health-app
-
-# 3. To create an uplink package for OrbitLab submission, use the helper
-#    script from the sample_apps repo:
-./create-uplink-package.sh my-crop-health-app crop_health_uplink.tar.gz
+    my-crop-health-app:latest
 ```
+
+Outputs land in `$(pwd)/results/` — check `crop_health_results.json` and
+`crop_health_annotated.png` to confirm the pipeline ran correctly.
+
+---
+
+### Step 5 — Create the Uplink Package
+
+The uplink package is a compressed delta containing only the layers your image
+adds on top of the base image — keeping the upload size well under 100 MB for
+efficient satellite transfer.
+
+```bash
+# Make the helper script executable (first time only)
+chmod +x create-uplink-package.sh
+
+# Build the delta package
+./create-uplink-package.sh my-crop-health-app:latest crop_health_uplink.tar.gz
+
+# Verify the package size (should be well under 100 MB)
+ls -lh *.tar.gz
+```
+
+The script will print a size check and an estimated satellite upload time. If
+the package is too large, see the **Optimization Tips** it prints on failure.
+
+---
+
+### Step 6 — Upload and Run on the AICube
+
+1. Go to the OrbitLab dashboard's **Task Creation** flow.
+2. Upload `crop_health_uplink.tar.gz` as the task package.
+3. Configure the task (bands, AOI, image format) — the bundled `player.config`
+   already has the correct defaults.
+4. Submit the task. The dashboard queues it for the next satellite pass.
+5. **Results appear in the task-detail view** once the AICube has processed
+   your captures: the JSON report, annotated PNG, and plain-text summary are
+   all available for download.
+
+---
+
+## Building the Docker Image Locally
 
 The Dockerfile inherits from `tm2space/aicube-base:latest`, which already
 includes Python 3, PyTorch, TensorFlow, ONNX Runtime, GDAL, Rasterio, PyProj,
-NumPy, OpenCV, scikit-image, and SciPy. `requirements.txt` re-pins what this
-app uses for transparency.
+NumPy, OpenCV, scikit-image, and SciPy. `requirements.txt` re-pins the
+packages this app actually uses for reproducibility.
+
+To iterate on the app locally:
+
+```bash
+# Rebuild after any code change
+docker build -t my-crop-health-app:latest .
+
+# Test run (see Step 4 above for the full run command)
+docker run --rm \
+    -v $(pwd)/data:/opt/ilc_player/data \
+    -v $(pwd)/results:/opt/ilc_player/results \
+    -e ILC_INPUT_DIR=/opt/ilc_player/data \
+    -e ILC_OUTPUT_DIR=/opt/ilc_player/results \
+    my-crop-health-app:latest
+
+# Re-package for upload
+./create-uplink-package.sh my-crop-health-app:latest crop_health_uplink.tar.gz
+```
 
 ---
 
@@ -450,13 +544,20 @@ model labelled the scene; you may need to fine-tune for your region.
 
 ## Repackaging After Modifications
 
-When you change anything in this directory, refresh the dashboard download:
+When you change anything in this directory, rebuild the Docker image, re-run
+the uplink script, and update the dashboard download:
 
 ```bash
-# from the parent of this directory:
-tar -cjf crop_health_app_task.bz2 crop_health_app/
+# 1. Rebuild your image
+docker build -t my-crop-health-app:latest .
+
+# 2. Regenerate the delta package
+./create-uplink-package.sh my-crop-health-app:latest crop_health_uplink.tar.gz
+
+# 3. Refresh the dashboard sample zip (from the parent of this directory):
+zip -r crop_health_app_task.zip crop_health_app/
 ```
 
-Drop the resulting bz2 into `orbitlab-dashboard/public/sample-aic-apps/`,
-replacing the old file. The `last_updated` field in `ExamplesDialog.tsx`
-should be bumped to today's date.
+Drop the resulting zip into `orbitlab-dashboard/public/sample-aic-apps/`,
+replacing the old file. Bump the `last_updated` field in `ExamplesDialog.tsx`
+to today's date.
